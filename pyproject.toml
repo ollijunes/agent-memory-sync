@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-memory-sync"
+version = "0.1.0"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.scripts]
+agent-memory-sync = "agent_memory_sync.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent_memory_sync*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S108", "S603", "S607"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+markers = ["integration: requires the real gitleaks binary"]
+
+[dependency-groups]
+dev = ["pytest>=9.1.1", "pytest-cov>=7.1.0", "ruff>=0.17.0"]
+
+[tool.setuptools.data-files]
+"share/agent-memory-sync/launchd" = ["contrib/launchd/*.plist"]
+"share/agent-memory-sync/systemd" = ["contrib/systemd/*.service", "contrib/systemd/*.timer"]
+"share/agent-memory-sync/examples" = ["examples/config.toml"]

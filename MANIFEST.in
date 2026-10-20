@@ -1,0 +1,7 @@
+include uv.lock
+include scripts/check_public_tree.py
+recursive-include tests *.py
+recursive-include examples *
+prune .uv-cache
+prune .venv
+global-exclude __pycache__ *.py[cod]

@@ -1,0 +1,15 @@
+repo = "~/backups/agent-memory"
+machine = "laptop"
+push = true
+scanner = "gitleaks"
+max_file_bytes = 1048576
+
+[sources.claude]
+enabled = true
+include = []
+exclude = []
+
+[sources.codex]
+enabled = true
+include = []
+exclude = []
