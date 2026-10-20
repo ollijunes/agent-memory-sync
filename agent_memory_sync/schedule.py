@@ -4,6 +4,7 @@ import os
 import plistlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +12,21 @@ from pathlib import Path
 from .config import SyncError, no_symlinks, private_dir, write_private
 
 LABEL = "com.github.ollijunes.agent-memory-sync"
-PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def scheduler_path(home: Path, platform: str) -> str:
+    directories = []
+    for name in ("git", "gitleaks"):
+        binary = shutil.which(name)
+        if binary:
+            directories.append(str(Path(binary).resolve().parent))
+    directories.append(str(home / ".local/bin"))
+    defaults = (
+        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        if platform == "launchd"
+        else "/usr/local/bin:/usr/bin:/bin"
+    )
+    return ":".join(dict.fromkeys([*directories, *defaults.split(":")]))
 
 
 def time_parts(at: str) -> tuple[int, int]:
@@ -47,6 +62,7 @@ def unit_quote(value: str) -> str:
 def render(home: Path, config: Path, at: str, platform: str) -> dict[Path, bytes]:
     hour, minute = time_parts(at)
     argv = command(home, config)
+    path = scheduler_path(home, platform)
     if platform == "launchd":
         log = home / "Library/Logs/agent-memory-sync"
         data = {
@@ -57,7 +73,7 @@ def render(home: Path, config: Path, at: str, platform: str) -> dict[Path, bytes
             "LowPriorityIO": True,
             "Nice": 10,
             "RunAtLoad": False,
-            "EnvironmentVariables": {"PATH": PATH},
+            "EnvironmentVariables": {"PATH": path},
             "StandardOutPath": str(log / "stdout.log"),
             "StandardErrorPath": str(log / "stderr.log"),
         }
@@ -66,7 +82,7 @@ def render(home: Path, config: Path, at: str, platform: str) -> dict[Path, bytes
     service = (
         "[Unit]\nDescription=Agent memory backup\n\n[Service]\nType=oneshot\n"
         f"ExecStart={' '.join(unit_quote(arg) for arg in argv)}\n"
-        f"Nice=10\nIOSchedulingClass=idle\nEnvironment=PATH={PATH}\n"
+        f"Nice=10\nIOSchedulingClass=idle\nEnvironment={unit_quote('PATH=' + path)}\n"
     )
     timer = (
         "[Unit]\nDescription=Daily agent memory backup\n\n[Timer]\n"

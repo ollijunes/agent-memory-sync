@@ -27,7 +27,8 @@ from .restore import restore
 from .schedule import schedule
 
 EPILOG = (
-    "Exit codes: 0 ok or no changes; 1 usage or config error; 3 secrets found; "
+    "Exit codes: 0 ok or no changes; 1 usage or config error; "
+    "2 unresolved restore conflicts; 3 secrets found; "
     "4 uncommitted changes in the backup folder; 5 no git identity; 6 push failed; "
     "7 gitleaks missing."
 )
@@ -86,7 +87,7 @@ def parser() -> Parser:
     for name in ("print", "install", "uninstall"):
         action = actions.add_parser(name)
         common(action, True)
-        action.add_argument("--at", required=name != "uninstall", default="02:00")
+        action.add_argument("--at", default="02:00")
         action.add_argument("--platform", choices=("launchd", "systemd"))
         action.add_argument("--dry-run", action="store_true")
     return root
@@ -117,6 +118,7 @@ def initialize(args, home: Path, path: Path) -> int:
     empty = git(config.repo, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
     if empty:
         require_identity(config.repo)
+    created = []
     for filename, data in (
         ("README.md", BACKUP_README.encode()),
         (".gitignore", b"*.lock\n.DS_Store\n"),
@@ -124,8 +126,9 @@ def initialize(args, home: Path, path: Path) -> int:
         target = config.repo / filename
         if not target.exists():
             write_private(target, data)
-    if empty:
-        git(config.repo, "add", "--", "README.md", ".gitignore")
+            created.append(filename)
+    if empty and created:
+        git(config.repo, "add", "--", *created)
         git(
             config.repo,
             "commit",
@@ -133,8 +136,7 @@ def initialize(args, home: Path, path: Path) -> int:
             "-m",
             "Initialize private memory backup",
             "--",
-            "README.md",
-            ".gitignore",
+            *created,
         )
     if args.remote:
         git(config.repo, "remote", "add", "origin", args.remote)

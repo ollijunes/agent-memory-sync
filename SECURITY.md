@@ -12,12 +12,20 @@ and include the affected version.
 - Copies only allowlisted files. Exclusions for credentials, transcripts,
   databases and runtime folders always win over includes, also over your own
   config. [What is copied](docs/what-is-copied.md) lists every rule.
-- Never reads `~/.claude.json`, never follows symlinks and skips binary,
-  non-UTF-8 and oversized files.
+- Never reads `~/.claude.json`, never follows symlinks and skips hard-linked,
+  binary, non-UTF-8 and oversized files. Built-in exclusions ignore letter
+  case, so `Auth.JSON` is excluded like `auth.json`.
 - Copies files first into a private temporary folder (mode 700, files 600).
-  Gitleaks and a built-in scanner both scan that folder. If either finds
-  anything, or Gitleaks fails or writes a report the tool cannot read, the
-  run stops and nothing is written to the backup repository.
+  Gitleaks and a built-in scanner both scan that folder, and the built-in
+  scanner also checks file names. If either finds anything, or Gitleaks
+  fails or writes a report the tool cannot read, the run stops and the
+  backup repository's files and history stay as they were.
+- Builds the commit from the scanned bytes, not from files re-read from
+  disk, and checks afterwards that the commit holds exactly those bytes. Git
+  filters and line-ending conversion cannot change them.
+- Removes the temporary folder when a run ends, fails or is stopped with
+  SIGTERM or SIGHUP. A folder left behind by a crash is removed by the next
+  run.
 - Reports findings as file, line and rule only. The matched text is never
   printed or logged.
 - Refuses to run without Gitleaks unless you opt in to the built-in scanner,
@@ -49,6 +57,12 @@ and include the affected version.
   real secret. Keep them narrow.
 - The public-visibility warning needs the `gh` CLI and works for GitHub
   only.
+- It does not defend against someone who can already write to your
+  `~/.claude` or `~/.codex` while it runs, for example by swapping a folder
+  for a symlink at the right moment. Such a person already controls your
+  account.
+- A crash or `kill -9` can leave the temporary folder behind until the next
+  run removes it. The folder is readable only by you.
 
 ## Repository hygiene
 

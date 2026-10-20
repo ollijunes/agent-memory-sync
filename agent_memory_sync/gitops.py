@@ -5,15 +5,18 @@ import json
 import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import tempfile
+import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 
 from .collect import collect
 from .config import Config, SyncError, no_symlinks, separate, write_private
-from .scan import scan
+from .scan import rules_in, scan
 
 
 def redact(text: str) -> str:
@@ -21,15 +24,21 @@ def redact(text: str) -> str:
 
 
 def git(
-    repo: Path, *args: str, check: bool = True, index: Path | None = None
+    repo: Path,
+    *args: str,
+    check: bool = True,
+    index: Path | None = None,
+    input: bytes | None = None,
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(  # noqa: S603 - argv, never a shell.
-        ["git", "-C", str(repo), *args],  # noqa: S607
+        ["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-C", str(repo), *args],  # noqa: S607
         capture_output=True,
-        text=True,
+        input=input,
         check=False,
         env={**os.environ, "GIT_INDEX_FILE": str(index)} if index else None,
     )
+    result.stdout = result.stdout.decode("utf-8", errors="replace")
+    result.stderr = result.stderr.decode("utf-8", errors="replace")
     if check and result.returncode:
         raise SyncError(f"git {args[0]} failed (output withheld)")
     return result
@@ -79,15 +88,18 @@ def remote(repo: Path) -> bool:
     return bool(git(repo, "remote").stdout.strip())
 
 
+def branch(repo: Path) -> str:
+    result = git(repo, "symbolic-ref", "-q", "HEAD", check=False)
+    if result.returncode:
+        raise SyncError("Detached HEAD: run requires a branch (or an unborn branch)")
+    return result.stdout.strip()
+
+
 def push(repo: Path, enabled: bool) -> None:
-    if enabled and remote(repo):
-        # Explicit refspec also works for a freshly initialized branch without an upstream.
-        result = git(repo, "push", "origin", "HEAD", check=False)
-        if result.returncode:
-            # A repository may use a remote name other than origin.
-            names = git(repo, "remote").stdout.splitlines()
-            if "origin" not in names:
-                result = git(repo, "push", names[0], "HEAD", check=False)
+    names = git(repo, "remote").stdout.splitlines() if enabled else []
+    if names:
+        name = "origin" if "origin" in names else names[0]
+        result = git(repo, "push", name, f"HEAD:{branch(repo)}", check=False)
         if result.returncode:
             raise SyncError("Push failed: " + redact(result.stderr.strip()), 6)
 
@@ -111,7 +123,12 @@ def visibility(repo: Path) -> str | None:
             check=False,
         )
         try:
-            if result.returncode == 0 and json.loads(result.stdout).get("visibility") == "PUBLIC":
+            if result.returncode:
+                return "could not determine remote repository visibility"
+            state = json.loads(result.stdout).get("visibility")
+            if state not in ("PUBLIC", "PRIVATE", "INTERNAL"):
+                return "could not determine remote repository visibility"
+            if state == "PUBLIC":
                 return "remote repository is public; memory backups must stay private"
         except (ValueError, AttributeError):
             return "could not determine remote repository visibility"
@@ -137,8 +154,120 @@ def tree_files(root: Path) -> dict[str, Path]:
     return files
 
 
+def clean_stale_staging() -> None:
+    cutoff = time.time() - 3600
+    for path in Path(tempfile.gettempdir()).glob("agent-memory-sync-*"):
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and info.st_mtime < cutoff:
+            shutil.rmtree(path)  # rmtree does not traverse symlinked children.
+
+
+@contextmanager
+def staging_directory():
+    def interrupted(signum, frame):
+        raise SyncError(f"Run interrupted by signal {signum}")
+
+    previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    staging = None
+    try:
+        staging = Path(tempfile.mkdtemp(prefix="agent-memory-sync-")).resolve()
+        yield staging
+    finally:
+        try:
+            if staging is not None:
+                shutil.rmtree(staging)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+
+def committed_files(repo: Path, machine: str) -> dict[str, tuple[str, str]]:
+    head = git(repo, "rev-parse", "--verify", "HEAD", check=False)
+    if head.returncode:
+        return {}
+    entries = git(repo, "ls-tree", "-rz", "HEAD", "--", machine).stdout
+    result = {}
+    for entry in entries.split("\0"):
+        if entry:
+            metadata, path = entry.split("\t", 1)
+            mode, _, oid = metadata.split()
+            result[path.removeprefix(machine + "/")] = (mode, oid)
+    return result
+
+
+def commit_staging(config: Config, before: dict, after: dict) -> tuple[int, int]:
+    expected = {
+        key: (
+            "100644",
+            git(
+                config.repo, "hash-object", "-w", "--no-filters", "--stdin", input=path.read_bytes()
+            ).stdout.strip(),
+        )
+        for key, path in after.items()
+    }
+    changed = sum(before.get(key) != value for key, value in expected.items())
+    removed = len(before.keys() - expected.keys())
+    if changed or removed:
+        with tempfile.TemporaryDirectory(prefix="agent-memory-sync-") as directory:
+            index = Path(directory) / "index"
+            head = git(config.repo, "rev-parse", "--verify", "HEAD", check=False)
+            git(
+                config.repo, "read-tree", "HEAD" if head.returncode == 0 else "--empty", index=index
+            )
+            if before:
+                git(
+                    config.repo,
+                    "update-index",
+                    "--force-remove",
+                    "-z",
+                    "--stdin",
+                    index=index,
+                    input="".join(f"{config.machine}/{key}\0" for key in before).encode(),
+                )
+            git(
+                config.repo,
+                "update-index",
+                "--add",
+                "-z",
+                "--index-info",
+                index=index,
+                input="".join(
+                    f"{mode} {oid}\t{config.machine}/{key}\0"
+                    for key, (mode, oid) in expected.items()
+                ).encode(),
+            )
+            tree = git(config.repo, "write-tree", index=index).stdout.strip()
+            parent = ["-p", head.stdout.strip()] if head.returncode == 0 else []
+            message = f"backup({config.machine}): {changed} changed, {removed} removed"
+            commit = git(config.repo, "commit-tree", tree, *parent, "-m", message).stdout.strip()
+            git(
+                config.repo,
+                "update-ref",
+                branch(config.repo),
+                commit,
+                head.stdout.strip() if head.returncode == 0 else "0" * len(commit),
+            )
+    else:
+        print("no changes")
+    # Recompute from staging, independently of the index and the working tree.
+    verified = {
+        key: (
+            "100644",
+            git(
+                config.repo, "hash-object", "--no-filters", "--stdin", input=path.read_bytes()
+            ).stdout.strip(),
+        )
+        for key, path in after.items()
+    }
+    if committed_files(config.repo, config.machine) != verified:
+        raise SyncError("Committed backup does not match scanned staging bytes")
+    return changed, removed
+
+
 def run(config: Config, dry_run: bool = False) -> int:
     separate(config.repo, config.sources)
+    branch(config.repo)
+    clean_stale_staging()
     with lock(config.repo) as acquired:
         if not acquired:
             print("another run is in progress")
@@ -146,20 +275,12 @@ def run(config: Config, dry_run: bool = False) -> int:
         target = config.repo / config.machine
         if not dry_run:
             status = git(
-                config.repo,
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-                "--ignored",
-                "--",
-                config.machine,
+                config.repo, "status", "--porcelain", "--untracked-files=all", "--", config.machine
             ).stdout
             if status:
                 raise SyncError("Uncommitted changes in the backup folder; review them first", 4)
-            tree_files(target)
             require_identity(config.repo)
-        staging = Path(tempfile.mkdtemp(prefix="agent-memory-sync-")).resolve()
-        try:
+        with staging_directory() as staging:
             result = collect(config, staging)
             findings = scan(staging, config.repo, config.scanner)
             if findings:
@@ -170,62 +291,35 @@ def run(config: Config, dry_run: bool = False) -> int:
                 for item in result.files:
                     print(f"include {item['source']}/{item['path']}")
                 for path, reason in result.skipped:
+                    if list(rules_in(path)):
+                        path = path.split("/", 1)[0] + "/<path withheld>"
                     print(f"skip {path}: {reason}")
                 return 0
             manifest = (json.dumps(result.files, indent=2, ensure_ascii=False) + "\n").encode()
             write_private(staging / "MANIFEST.json", manifest)
-            before, after = tree_files(target), tree_files(staging)
-            removed = sorted(before.keys() - after.keys())
-            changed = sorted(
-                key
-                for key in after
-                if key not in before or before[key].read_bytes() != after[key].read_bytes()
-            )
-            unchanged = len(after) - len(changed)
-            # Remove old paths first so file-to-directory transitions can be mirrored.
-            for key in removed:
-                before[key].unlink()
+            before, after = committed_files(config.repo, config.machine), tree_files(staging)
+            no_symlinks(target)
+            for key in before.keys() | after.keys():
+                no_symlinks(target / key)
+            changed, removed = commit_staging(config, before, after)
+            # Only previously tracked paths are removed; ignored housekeeping files stay put.
+            for key in before.keys() - after.keys():
+                (target / key).unlink()
             if target.exists():
-                for parent, directories, _ in os.walk(target, topdown=False):
+                for parent, directories, _ in os.walk(target, topdown=False, followlinks=False):
                     for directory in directories:
                         path = Path(parent) / directory
-                        if not any(path.iterdir()):
+                        if not path.is_symlink() and not any(path.iterdir()):
                             path.rmdir()
-            for key in changed:
-                write_private(target / key, after[key].read_bytes())
-            git(config.repo, "add", "-A", "--", config.machine)
-            staged = git(
-                config.repo, "diff", "--cached", "--quiet", "--", config.machine, check=False
-            )
-            if staged.returncode == 0:
-                print("no changes")
-            elif staged.returncode == 1:
-                message = (
-                    f"backup({config.machine}): {len(changed)} changed, {len(removed)} removed"
-                )
-                paths = [f"{config.machine}/{key}" for key in [*changed, *removed]][:50]
-                # A temporary index preserves unrelated staged work and handles path type changes.
-                with tempfile.TemporaryDirectory(prefix="agent-memory-index-") as directory:
-                    index = Path(directory) / "index"
-                    head = git(config.repo, "rev-parse", "--verify", "HEAD", check=False)
-                    git(
-                        config.repo,
-                        "read-tree",
-                        "HEAD" if head.returncode == 0 else "--empty",
-                        index=index,
-                    )
-                    git(config.repo, "add", "-A", "--", config.machine, index=index)
-                    git(config.repo, "commit", "-m", message, "-m", "\n".join(paths), index=index)
-            else:
-                raise SyncError("Cannot inspect staged backup changes")
+            for key, path in after.items():
+                write_private(target / key, path.read_bytes())
+            git(config.repo, "reset", "-q", "--", config.machine)
             push(config.repo, config.push)
             sha = git(config.repo, "rev-parse", "HEAD").stdout.strip()
             counts = Counter(reason for _, reason in result.skipped)
             skipped = ",".join(f"{key}={value}" for key, value in sorted(counts.items())) or "0"
             print(
-                f"copied={len(changed)} unchanged={unchanged} removed={len(removed)} "
+                f"copied={changed} unchanged={len(after) - changed} removed={removed} "
                 f"skipped={skipped} commit={sha}"
             )
             return 0
-        finally:
-            shutil.rmtree(staging)

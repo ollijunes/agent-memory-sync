@@ -11,7 +11,14 @@ import pytest
 from agent_memory_sync.cli import doctor, main
 from agent_memory_sync.config import SyncError, dump
 from agent_memory_sync.gitops import visibility
-from agent_memory_sync.schedule import LABEL, PATH, render, schedule, time_parts, unit_quote
+from agent_memory_sync.schedule import (
+    LABEL,
+    render,
+    schedule,
+    scheduler_path,
+    time_parts,
+    unit_quote,
+)
 from tests.conftest import git
 
 
@@ -143,7 +150,7 @@ def test_launchd_plist_and_systemd_units(isolated_home, tmp_path):
     assert data["ProcessType"] == "Background"
     assert data["LowPriorityIO"] is True
     assert data["Nice"] == 10 and data["RunAtLoad"] is False and "KeepAlive" not in data
-    assert data["EnvironmentVariables"]["PATH"] == PATH
+    assert data["EnvironmentVariables"]["PATH"] == scheduler_path(isolated_home, "launchd")
     assert data["ProgramArguments"][0] == sys.executable
     assert data["ProgramArguments"][-2:] == [str(path), "run"]
     if sys.platform == "darwin":
@@ -153,7 +160,11 @@ def test_launchd_plist_and_systemd_units(isolated_home, tmp_path):
     units = render(isolated_home, path, "03:25", "systemd")
     service, timer = [value.decode() for value in units.values()]
     assert "Type=oneshot" in service and "IOSchedulingClass=idle" in service
-    assert "Nice=10" in service and f"Environment=PATH={PATH}" in service
+    assert (
+        "Nice=10" in service
+        and "Environment=" + unit_quote("PATH=" + scheduler_path(isolated_home, "systemd"))
+        in service
+    )
     assert '"' + str(path) + '"' in service
     assert "OnCalendar=*-*-* 03:25:00" in timer
     assert "Persistent=true" in timer and "RandomizedDelaySec=5m" in timer
@@ -250,6 +261,7 @@ def test_init_cannot_write_config_into_source(setup):
 
 def test_shipped_templates_match_render(isolated_home, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "executable", "/path/to/python")
+    monkeypatch.setattr("agent_memory_sync.schedule.scheduler_path", lambda *args: "@PATH@")
     for platform in ("launchd", "systemd"):
         files = render(Path("/path/to/home"), Path("/path/to/config.toml"), "02:00", platform)
         for path, content in files.items():
@@ -257,7 +269,16 @@ def test_shipped_templates_match_render(isolated_home, tmp_path, monkeypatch):
             expected = expected.replace(b"/path/to/home", b"@HOME@")
             expected = expected.replace(b"/path/to/config.toml", b"@CONFIG@")
             template = Path(__file__).parents[1] / "contrib" / platform / path.name
-            assert template.read_bytes() == expected
+            actual = template.read_text()
+            actual = (
+                "\n".join(
+                    line
+                    for line in actual.splitlines()
+                    if "Resolved git/gitleaks directories" not in line
+                )
+                + "\n"
+            )
+            assert actual.encode() == expected
 
 
 def test_module_entrypoint(isolated_home):

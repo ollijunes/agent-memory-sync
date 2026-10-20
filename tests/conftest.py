@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,9 @@ from agent_memory_sync.config import Config, Source, dump, write_private
 def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -69,7 +73,7 @@ def fake_gitleaks(tmp_path, monkeypatch):
     binary = directory / "gitleaks"
     monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
 
-    def make(code=0, report=None):
+    def make(code=0, report=(), *, raw=None):
         binary.write_text(f"""#!{sys.executable}
 import json
 import pathlib
@@ -78,8 +82,11 @@ if sys.argv[1:] == ["version"]:
     print("8.24.3")
     sys.exit(0)
 pathlib.Path({str(tmp_path / "scanner-argv.json")!r}).write_text(json.dumps(sys.argv[1:]))
-report = {report!r}
-if report is not None:
+report = {list(report) if report == () else report!r}
+raw = {raw!r}
+if raw is not None:
+    pathlib.Path(sys.argv[sys.argv.index("-r") + 1]).write_text(raw)
+elif report is not None:
     pathlib.Path(sys.argv[sys.argv.index("-r") + 1]).write_text(json.dumps(report))
 sys.exit({code})
 """)

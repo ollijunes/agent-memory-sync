@@ -88,7 +88,7 @@ def test_push_and_retry_unchanged(setup, tmp_path, capsys):
     assert run(config) == 0
 
 
-@pytest.mark.parametrize("kind", ["tracked", "untracked", "ignored", "staged"])
+@pytest.mark.parametrize("kind", ["tracked", "untracked", "staged"])
 def test_dirty_backup_rejected(setup, kind):
     _, repo, config, _ = setup
     run(config)

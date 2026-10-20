@@ -3,9 +3,17 @@
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-from .config import SyncError, label, no_symlinks, read_relative, roots, write_private
+from .config import (
+    SyncError,
+    label,
+    no_symlinks,
+    read_relative,
+    roots,
+    safe_relative,
+    write_private,
+)
 
 
 def restore(
@@ -31,16 +39,7 @@ def restore(
         name, relative = entry["source"], entry["path"]
         if not isinstance(name, str) or name not in targets or not isinstance(relative, str):
             raise SyncError("Invalid manifest source or path")
-        path = PurePosixPath(relative)
-        if (
-            path.is_absolute()
-            or ".." in path.parts
-            or "\\" in relative
-            or not path.parts
-            or path.as_posix() != relative
-            or ":" in relative
-            or any(ord(c) < 32 for c in relative)
-        ):
+        if not safe_relative(relative):
             raise SyncError("Unsafe manifest path")
         key = (name, relative)
         if key in seen:
@@ -72,13 +71,30 @@ def restore(
         else:
             actions.append(("write", destination, data, None))
     # Validate the complete selected manifest before applying even the first file.
+    conflicts = False
     for action, destination, data, current in actions:
+        if apply and action in ("write", "overwrite"):
+
+            def recheck(destination=destination, current=current):
+                if destination.is_symlink():
+                    raise FileExistsError
+                no_symlinks(destination)
+                if current is not None:
+                    if (
+                        not destination.is_file()
+                        or read_relative(destination.parent, destination.name) != current
+                    ):
+                        raise FileExistsError
+                    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+                    backup = destination.with_name(
+                        f"{destination.name}.agent-memory-sync-{stamp}.bak"
+                    )
+                    write_private(backup, current, exclusive=True)
+
+            try:
+                write_private(destination, data, exclusive=current is None, before_replace=recheck)
+            except FileExistsError:
+                action = "conflict"
+        conflicts |= action == "conflict"
         print(f"{action}: {destination}")
-        if not apply or action in ("conflict", "unchanged"):
-            continue
-        if current is not None:
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-            backup = destination.with_name(f"{destination.name}.agent-memory-sync-{stamp}.bak")
-            write_private(backup, current)
-        write_private(destination, data)
-    return 0
+    return 2 if conflicts else 0

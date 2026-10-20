@@ -38,7 +38,7 @@ sign-in session and MCP server settings, which often contain tokens.
 
 | Excluded | Why |
 | --- | --- |
-| `.credentials.json`, `auth.json`, `*.pem`, `*.key`, `.env`, `.env.*` | Credentials and keys |
+| `.credentials.json`, `auth.json`, `.claude.json`, `*.pem`, `*.key`, `.env`, `.env.*` | Credentials, sign-in state and keys |
 | Any file or folder name containing `token`, `secret`, `credential` or `password` | Likely credential notes. This also skips harmless names |
 | `*.jsonl` | Session transcripts and prompt history in both tools |
 | `*.sqlite`, `*.sqlite-*`, `*.db` | Databases, including Codex state and memories in SQLite |
@@ -49,9 +49,15 @@ sign-in session and MCP server settings, which often contain tokens.
 
 ## Other rules
 
+- Exclusions ignore letter case: `Auth.JSON`, `.ENV` and `chat.JSONL` are
+  excluded too. Your own globs are case-sensitive.
 - Symlinks are skipped and never followed, for files and for folders.
+- Hard-linked files are skipped, because the same file can also exist under
+  an excluded name.
 - Files over `max_file_bytes` (1 MiB by default) are skipped.
 - Binary files and files that are not UTF-8 are skipped.
+- Files whose names contain `:`, a backslash or a control character are
+  skipped, because `restore` could not write them back safely.
 
 Run `agent-memory-sync plan` to see every file with the rule that included or
 skipped it.

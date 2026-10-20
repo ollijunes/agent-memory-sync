@@ -31,6 +31,7 @@ INCLUDED = {
     ],
 }
 EXCLUDED = [
+    ".claude.json",
     ".credentials.json",
     "auth.json",
     "a.pem",
@@ -96,4 +97,4 @@ def test_user_rules():
 
 
 def test_settings_local_name_rule_at_any_depth():
-    assert reason("claude", "skills/demo/settings.local.json") == "excluded:settings.local.json"
+    assert reason("claude", "skills/demo/settings.local.json") == "excluded:**/settings.local.json"

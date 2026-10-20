@@ -6,4 +6,5 @@ Type=oneshot
 ExecStart="@PYTHON@" "-m" "agent_memory_sync" "--home" "@HOME@" "--config" "@CONFIG@" "run"
 Nice=10
 IOSchedulingClass=idle
-Environment=PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# Resolved git/gitleaks directories, ~/.local/bin, then platform defaults.
+Environment="PATH=@PATH@"

@@ -6,7 +6,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import Config, SyncError, no_symlinks, read_relative, write_private
+from .config import Config, SyncError, no_symlinks, read_relative, safe_relative, write_private
 from .rules import reason
 
 
@@ -46,6 +46,9 @@ def collect(config: Config, staging: Path) -> Collection:
                 path = Path(parent) / filename
                 relative = path.relative_to(source.root).as_posix()
                 display = f"{name}/{relative}"
+                if not safe_relative(relative):
+                    result.skipped.append((f"{name}/<path withheld>", "unsafe-name"))
+                    continue
                 skip = (
                     "symlink"
                     if path.is_symlink()
@@ -56,6 +59,8 @@ def collect(config: Config, staging: Path) -> Collection:
                         info = path.lstat()
                         if not stat.S_ISREG(info.st_mode):
                             skip = "binary"
+                        elif info.st_nlink > 1:
+                            skip = "hard-link"
                         elif info.st_size > config.max_file_bytes:
                             skip = "too-large"
                         else:
@@ -70,7 +75,9 @@ def collect(config: Config, staging: Path) -> Collection:
                                 except UnicodeDecodeError:
                                     skip = "not-utf8"
                     except OSError as exc:
-                        raise SyncError(f"{display}: cannot safely read source file") from exc
+                        raise SyncError(
+                            f"{name}/<path withheld>: cannot safely read source file"
+                        ) from exc
                 if skip:
                     result.skipped.append((display, skip))
                     continue

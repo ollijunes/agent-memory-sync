@@ -38,6 +38,9 @@ Nothing is written yet. Each line says what would happen to one file:
 
 Use `--source claude` or `--source codex` to restore one tool only.
 
+`restore` exits with code 2 when at least one conflict is left, and 0 when
+there is none.
+
 Before it does anything, `restore` checks every selected file against the
 `MANIFEST.json` in the machine folder. A file whose size or SHA-256 does not
 match stops the whole restore.
@@ -49,7 +52,11 @@ agent-memory-sync restore --from ~/backups/agent-memory --machine laptop --apply
 ```
 
 This writes the missing files only. Folders are created with mode 700 and
-files with mode 600. Files that are not in the manifest are never touched.
+files with mode 600. Each file is written to a temporary file first and then
+moved into place, so an interrupted restore never leaves a half-written
+file. Files that are not in the manifest are never touched. If a file
+appears or changes between the preview and the write, it is reported as a
+conflict and left alone.
 
 To replace files that differ, add `--overwrite`:
 
@@ -67,7 +74,8 @@ files. In Codex, ask what your global instructions say.
 
 ## An older version
 
-The backup repository is plain Git, so every earlier run is a commit:
+The backup repository is plain Git, so every run that changed something is
+a commit:
 
 ```sh
 cd ~/backups/agent-memory
@@ -92,5 +100,7 @@ Restored auto memory is in `projects/<project-slug>/memory/`. The slug is the
 project's absolute path with `/` replaced by `-`. If your home folder or
 project paths differ on the new machine, rename the slug folder to match.
 
-Credentials, sign-in state and MCP server settings are never in the backup.
-Sign in again and add your MCP servers again after a restore.
+Credential files, sign-in state and `~/.claude.json` are never in the
+backup, so Claude Code's MCP server settings are not either. Sign in again
+and add your Claude Code MCP servers again after a restore. Codex keeps its
+MCP servers in `config.toml`, which is backed up after the secret scan.

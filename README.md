@@ -55,6 +55,11 @@ agent-memory-sync init \
 agent-memory-sync doctor
 ```
 
+`init` writes a short `README.md` and `.gitignore` into the backup
+repository. It leaves existing ones alone and commits nothing in a
+repository that already has commits. The backup repository must be on a
+branch, not a detached HEAD.
+
 `--machine` is a short label of your choice. Each machine gets its own
 folder, so several machines can share one backup repository. The config goes
 to `~/.config/agent-memory-sync/config.toml`. If the remote is on GitHub and
@@ -74,7 +79,7 @@ include codex/AGENTS.md
 include codex/config.toml
 skip claude/.credentials.json: excluded:**/.credentials.json
 skip claude/projects/-home-alex-src-demo/transcript.jsonl: excluded:**/*.jsonl
-skip claude/projects/-tmp-demo/memory/MEMORY.md: excluded:projects/-tmp-*/**
+skip claude/projects/-tmp-demo/memory/MEMORY.md: excluded:**/projects/-tmp-*/**
 skip codex/auth.json: excluded:**/auth.json
 ```
 
@@ -112,6 +117,11 @@ unless you enable lingering with `loginctl enable-linger`. Logs:
 uninstall` removes them. The same templates are in [`contrib/`](contrib) if
 you prefer to install by hand.
 
+A scheduled job does not read your shell profile. Its PATH holds the
+folders where `git` and `gitleaks` were found at install time, `~/.local/bin`
+and the system folders. Run `schedule install` again if you move either
+program.
+
 The scheduled job pushes with your normal Git credentials. On macOS the
 launchd agent runs in your login session, so the Keychain and your SSH agent
 work. On Linux an SSH agent is usually not available to a timer; use a deploy
@@ -121,14 +131,17 @@ key or a credential helper.
 
 | Exit | Meaning | What to do |
 | --- | --- | --- |
-| 0 | Done, or no changes | Nothing |
+| 0 | Done, no changes, or another run was already in progress | Nothing |
+| 1 | Usage, config or Git error | Read the message. Run `agent-memory-sync doctor` |
 | 3 | Possible secret found | The output names the file, line and rule, never the value. Remove the secret from the source file, or allowlist a false positive (see below) |
 | 4 | Uncommitted changes in the backup folder | Look at `git status` in the backup repository and commit or discard them |
 | 5 | No Git identity in the backup repository | Set `git config user.name` and `user.email` there |
 | 6 | Push failed | The commit is kept and the next run pushes it. Check the remote and your credentials |
 | 7 | Gitleaks is not installed | Install it, or opt in to `scanner = "builtin"` in the config |
 
-When a secret is found, nothing is written to the backup repository.
+When a secret is found, the files and history in the backup repository stay
+as they were. The scan also covers file names, and a finding in a name is
+reported without the name.
 
 False positives are common in memory files, because they are prose that
 mentions tokens and keys. For Gitleaks, add an allowlist to `.gitleaks.toml`

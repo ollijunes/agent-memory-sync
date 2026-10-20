@@ -4,7 +4,9 @@ import json
 import os
 import re
 import stat
+import tempfile
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -57,18 +59,45 @@ def private_dir(path: Path) -> None:
         path.mkdir(mode=0o700)
 
 
-def write_private(path: Path, data: bytes) -> None:
+def safe_relative(relative: str) -> bool:
+    return (
+        bool(relative)
+        and not any(part in ("", ".", "..") for part in relative.split("/"))
+        and not any(c in ":\\" or ord(c) < 32 or 127 <= ord(c) <= 159 for c in relative)
+    )
+
+
+def write_private(
+    path: Path,
+    data: bytes,
+    *,
+    exclusive: bool = False,
+    before_replace: Callable[[], None] | None = None,
+) -> None:
     private_dir(path.parent)
-    no_symlinks(path)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(data)
+    if before_replace is None and not exclusive:
+        no_symlinks(path)
+    # mkstemp uses O_EXCL and mode 0600 in the destination directory.
+    fd, name = tempfile.mkstemp(prefix=".agent-memory-sync-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if before_replace:
+            before_replace()
+        if exclusive:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_relative(root: Path, relative: str, limit: int | None = None) -> bytes:
     parts = relative.split("/")
-    if not parts or any(p in ("", ".", "..") for p in parts) or "\\" in relative:
+    if not safe_relative(relative):
         raise SyncError("Unsafe relative path")
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:

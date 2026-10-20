@@ -32,6 +32,7 @@ INCLUDES = {
     ),
 }
 EXCLUDES = (
+    "**/.claude.json",
     "**/.credentials.json",
     "**/auth.json",
     "**/*.pem",
@@ -61,11 +62,11 @@ EXCLUDES = (
     "**/.git/**",
     "**/*.bak*",
     "**/*.lock",
-    "settings.local.json",
-    "projects/-private-var-folders-*/**",
-    "projects/-tmp-*/**",
-    "projects/-private-tmp-*/**",
-    "projects/-var-folders-*/**",
+    "**/settings.local.json",
+    "**/projects/-private-var-folders-*/**",
+    "**/projects/-tmp-*/**",
+    "**/projects/-private-tmp-*/**",
+    "**/projects/-var-folders-*/**",
 )
 NAME_RULES = {"**/*token*", "**/*secret*", "**/*credential*", "**/*password*"}
 
@@ -85,20 +86,15 @@ def matches(path: str, pattern: str) -> bool:
 
 
 def reason(source: str, path: str, include=(), exclude=()) -> str | None:
-    # User includes add coverage, but can never override a built-in exclusion.
-    for pattern in (*EXCLUDES, *exclude):
-        candidate = path.lower() if pattern in NAME_RULES else path
-        if (
-            (pattern == "settings.local.json" and path.rsplit("/", 1)[-1] == pattern)
-            or matches(candidate, pattern)
-            or (
-                pattern in NAME_RULES
-                and any(
-                    fnmatch.fnmatchcase(part.lower(), pattern.rsplit("/", 1)[-1])
-                    for part in path.split("/")
-                )
-            )
+    # Built-in exclusions ignore case; user include/exclude globs stay case-sensitive.
+    for pattern in EXCLUDES:
+        if matches(path.lower(), pattern) or (
+            pattern in NAME_RULES
+            and any(fnmatch.fnmatchcase(part.lower(), pattern[3:]) for part in path.split("/"))
         ):
+            return f"excluded:{pattern}"
+    for pattern in exclude:
+        if matches(path, pattern):
             return f"excluded:{pattern}"
     if not any(matches(path, pattern) for pattern in (*INCLUDES[source], *include)):
         return "not-included"
