@@ -1,8 +1,8 @@
 # T1 Initial tool: allowlist backup, secret scan, schedulers, restore
 
-- Status: doing
+- Status: done
 - Lane: feat/initial-tool-20261020
-- Evidence: —
+- Evidence: CI 12/12 with tests on Linux and macOS (Intel runner) × Python 3.11–3.14, the Gitleaks integration job, lint, secrets and ledger: https://github.com/ollijunes/agent-memory-sync/actions/runs/39477835077
 
 ## Plan
 
