@@ -25,6 +25,8 @@ day.
 [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) ·
 [ollijunes.com](https://ollijunes.com)
 
+Read the story behind it: [in English](https://ollijunes.com/back-up-claude-code-codex-memory/) · [suomeksi](https://ollijunes.com/fi/claude-code-codex-muisti-varmuuskopio/).
+
 ## Who it is for
 
 People who use Claude Code, Codex CLI or both on macOS or Linux and want
